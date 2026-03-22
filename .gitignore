@@ -1,0 +1,75 @@
+
+# Python
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+
+# Virtual environments
+
+venv/
+env/
+.venv/
+.env/
+
+
+# Trained models & checkpoints 
+
+sac_models/
+checkpoints/
+*.zip
+*.pkl
+
+
+# Training logs & TensorBoard
+
+logs/
+*.npz
+
+
+# Demo / recording outputs
+
+*.gif
+*.mp4
+*.avi
+*.mov
+
+
+# PyBullet 
+
+a1/
+
+
+# Gait analysis plots
+
+*.png
+*.jpg
+*.jpeg
+
+
+# IDE & OS
+
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+
+
+
+# Misc
+
+*.log
+*.tmp
+*.bak
