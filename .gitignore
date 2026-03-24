@@ -36,7 +36,7 @@ logs/
 
 # Demo / recording outputs
 
-*.gif
+
 *.mp4
 *.avi
 *.mov

@@ -319,3 +319,6 @@ if __name__ == '__main__':
 
     if args.gait:
         plot_gait_analysis(foot_contacts, joint_pos, save_path=args.gait_out)
+
+
+# python test_sac.py --terrain 1 --episodes 5 --render --model sac_models/curriculum/stage1_slope/best_model/best_model --norm sac_models/curriculum/stage1_slope/checkpoints/stage1_vecnormalize_1820000_steps.pkl
