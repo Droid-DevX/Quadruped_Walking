@@ -1,12 +1,12 @@
 """
-train_curriculum.py  —  Curriculum Learning for Quadruped SAC
-==============================================================
-Continues from your existing flat-terrain best model (3 M steps already done).
+train_curriculum.py  —  Curriculum Learning for Quadruped SAC (FROM SCRATCH)
+=============================================================================
+Trains entirely from scratch across 3 stages, 2M steps each.
 
 Curriculum:
-  Stage 0  →  flat    (terrain_level=0)  — already done, used as warm-start
-  Stage 1  →  slope   (terrain_level=1)  — 10 L steps fine-tune
-  Stage 2  →  rough   (terrain_level=2)  — 15 L steps fine-tune
+  Stage 1  →  flat    (terrain_level=0)  — 2M steps, fresh SAC
+  Stage 2  →  slope   (terrain_level=1)  — 2M steps, warm-start from stage 1
+  Stage 3  →  rough   (terrain_level=2)  — 2M steps, warm-start from stage 2
                         rough difficulty increases progressively:
                         0-33%  steps → height 0.00–0.03  (gentle bumps)
                         33-66% steps → height 0.03–0.06  (medium bumps)
@@ -18,9 +18,10 @@ Reward fixes applied (standing exploit patch):
   • forward_reward multiplied by clipped(vx / target_vx) factor
 
 Usage:
-  python train_curriculum.py                        # full curriculum from best model
-  python train_curriculum.py --start_stage 2        # jump straight to rough
-  python train_curriculum.py --stage1_steps 500000  # custom step counts
+  python train_curriculum.py                        # full 3-stage curriculum from scratch
+  python train_curriculum.py --start_stage 2        # resume from stage 2 (needs stage 1 output)
+  python train_curriculum.py --start_stage 3        # resume from stage 3 (needs stage 2 output)
+  python train_curriculum.py --stage1_steps 1000000 # custom step counts
 """
 
 import argparse
@@ -44,9 +45,9 @@ from environment import (NUM_JOINTS, OBS_DIM, ACT_DIM, MAX_EPISODE_STEPS,
                          CONTROL_HZ, PHYSICS_SUBSTEPS, TORQUE_LIMIT,
                          A1_JOINT_LIMITS)
 
-# ---------------------------------------------------------------------------
+
 # PATCHED QuadrupedEnv  (reward fixes + progressive rough terrain)
-# ---------------------------------------------------------------------------
+
 
 class QuadrupedEnvPatched(gym.Env):
     """
@@ -87,9 +88,10 @@ class QuadrupedEnvPatched(gym.Env):
         self._joint_ids      = []
         self._joint_limits   = []
         self._init_yaw       = 0.0
+        self._slope_angle    = 0.0    # radians, set by _load_terrain()
         self._connect()
 
-    # ── connect ──────────────────────────────────────────────────────────────
+    # ── connect 
     def _connect(self):
         if self._physics_client is not None:
             try:
@@ -113,7 +115,7 @@ class QuadrupedEnvPatched(gym.Env):
                 cameraTargetPosition=[0, 0, 0.27],
                 physicsClientId=self._physics_client)
 
-    # ── reset ─────────────────────────────────────────────────────────────────
+    # ── reset 
     def reset(self, seed=None, options=None):
         if seed is not None:
             np.random.seed(seed)
@@ -130,8 +132,16 @@ class QuadrupedEnvPatched(gym.Env):
 
         self._load_terrain()
 
-        start_pos = [0, 0, 0.48]
-        start_orn = p.getQuaternionFromEuler([0, 0, 0])
+        # Spawn robot above terrain surface (not a fixed z)
+        spawn_x, spawn_y = 0.0, 0.0
+        ground_z_at_spawn = self._get_ground_height_at(spawn_x, spawn_y)
+        # FIX: On slope, tilt spawn orientation to match terrain so feet land flat
+        if self.terrain_level == 1:
+            start_orn = p.getQuaternionFromEuler([0, -self._slope_angle, 0])
+            start_pos = [spawn_x, spawn_y, ground_z_at_spawn + 0.55]
+        else:
+            start_pos = [spawn_x, spawn_y, ground_z_at_spawn + 0.48]
+            start_orn = p.getQuaternionFromEuler([0, 0, 0])
         self._robot_id = p.loadURDF(
             'a1/urdf/a1.urdf',
             basePosition=start_pos, baseOrientation=start_orn,
@@ -151,7 +161,8 @@ class QuadrupedEnvPatched(gym.Env):
         for i, jid in enumerate(self._joint_ids):
             p.resetJointState(self._robot_id, jid, STANDING_POSE[i], 0.0,
                               physicsClientId=self._physics_client)
-        for _ in range(200):
+        settle_steps = 300 if self.terrain_level == 1 else 200
+        for _ in range(settle_steps):
             for i, jid in enumerate(self._joint_ids):
                 p.setJointMotorControl2(
                     self._robot_id, jid, p.POSITION_CONTROL,
@@ -165,7 +176,7 @@ class QuadrupedEnvPatched(gym.Env):
 
         return self._get_obs(), {}
 
-    # ── step ──────────────────────────────────────────────────────────────────
+    # ── step 
     def step(self, action):
         action = np.clip(action, -1., 1.)
         action = 0.2 * self._prev_action + 0.8 * action
@@ -175,7 +186,7 @@ class QuadrupedEnvPatched(gym.Env):
             p.stepSimulation(physicsClientId=self._physics_client)
         self._step_count += 1
         if self.render_mode:
-            time.sleep(1.5 / CONTROL_HZ)
+            time.sleep(PHYSICS_SUBSTEPS / CONTROL_HZ)
             self._follow_camera()
         obs        = self._get_obs()
         reward     = self._compute_reward(action)
@@ -187,7 +198,7 @@ class QuadrupedEnvPatched(gym.Env):
     def render(self, mode='human'):
         pass
 
-    # ── camera ────────────────────────────────────────────────────────────────
+    # ── camera 
     def _follow_camera(self):
         if self._robot_id is None:
             return
@@ -217,12 +228,50 @@ class QuadrupedEnvPatched(gym.Env):
     def set_terrain_level(self, level):
         self.terrain_level = int(np.clip(level, 0, 2))
 
-    # ── terrain ───────────────────────────────────────────────────────────────
+    # ── ground height 
+    def _slope_ground_z(self, x):
+        """Analytical ground height on tilted plane at x-position."""
+        return -x * np.tan(self._slope_angle)
+
+    def _get_ground_height_at(self, x, y):
+        """Get terrain height at (x, y).  Analytical for slope terrain."""
+        if self.terrain_level == 1:
+            return self._slope_ground_z(x)
+        ray_start = [x, y, 10.0]
+        ray_end   = [x, y, -10.0]
+        result = p.rayTest(ray_start, ray_end,
+                           physicsClientId=self._physics_client)
+        if result:
+            for hit in result:
+                if hit[0] >= 0:
+                    return hit[3][2]
+        return 0.0
+
+    def _get_ground_height(self):
+        """Get terrain height below robot.  Analytical for slope terrain."""
+        base_pos, _ = p.getBasePositionAndOrientation(
+            self._robot_id, physicsClientId=self._physics_client)
+        if self.terrain_level == 1:
+            return self._slope_ground_z(base_pos[0])
+        ray_start = [base_pos[0], base_pos[1], base_pos[2] + 2.0]
+        ray_end   = [base_pos[0], base_pos[1], base_pos[2] - 5.0]
+        result = p.rayTest(ray_start, ray_end,
+                           physicsClientId=self._physics_client)
+        if result:
+            for hit in result:
+                if hit[0] != self._robot_id and hit[0] >= 0:
+                    return hit[3][2]
+        return 0.0
+
+    # ── terrain 
     def _load_terrain(self):
+        self._slope_angle = 0.0
         if self.terrain_level == 0:
             p.loadURDF('plane.urdf', physicsClientId=self._physics_client)
         elif self.terrain_level == 1:
-            orn = p.getQuaternionFromEuler([0, np.deg2rad(10), 0])
+            # FIX: Match environment.py — 10° so the policy genuinely learns slopes
+            self._slope_angle = np.deg2rad(10)
+            orn = p.getQuaternionFromEuler([0, self._slope_angle, 0])
             p.loadURDF('plane.urdf', [0, 0, 0], orn,
                        physicsClientId=self._physics_client)
         else:
@@ -252,7 +301,7 @@ class QuadrupedEnvPatched(gym.Env):
             tid, [0, 0, 0], [0, 0, 0, 1],
             physicsClientId=self._physics_client)
 
-    # ── joints ────────────────────────────────────────────────────────────────
+    # ── joints 
     def _cache_joint_info(self):
         self._joint_ids, self._joint_limits = [], []
         for j in range(p.getNumJoints(self._robot_id,
@@ -277,7 +326,7 @@ class QuadrupedEnvPatched(gym.Env):
             p.resetJointState(self._robot_id, jid, target,
                               physicsClientId=self._physics_client)
 
-    # ── observation ───────────────────────────────────────────────────────────
+    # ── observation 
     def _get_obs(self):
         base_pos, base_orn = p.getBasePositionAndOrientation(
             self._robot_id, physicsClientId=self._physics_client)
@@ -294,10 +343,14 @@ class QuadrupedEnvPatched(gym.Env):
             joint_vel.append(js[1])
         contacts = self._get_foot_contacts()
         self._prev_pos = np.array(base_pos)
+
+        slope_sin = np.sin(self._slope_angle)  # 0 on flat, sin(θ) on slope
+
         return np.concatenate([
             base_vel, base_ang, rpy,
             joint_pos, joint_vel, contacts,
-            gravity_base, self.target_vel, [self.terrain_level]
+            gravity_base, self.target_vel,
+            [slope_sin],              # replaces terrain_level scalar — OBS_DIM stays 44
         ]).astype(np.float32)
 
     def _get_foot_contacts(self):
@@ -322,7 +375,7 @@ class QuadrupedEnvPatched(gym.Env):
         return (foot_ids if len(foot_ids) >= 4
                 else self._joint_ids[-4:])[:4]
 
-    # ── PATCHED reward ────────────────────────────────────────────────────────
+    # ── PATCHED reward 
     def _compute_reward(self, action):
         base_pos, base_orn = p.getBasePositionAndOrientation(
             self._robot_id, physicsClientId=self._physics_client)
@@ -334,18 +387,26 @@ class QuadrupedEnvPatched(gym.Env):
         vy = base_vel[1]
         target_vx = self.target_vel[0]
 
-        # forward reward scaled by actual vx progress
-        vel_error      = vx - target_vx
-        progress_scale = float(np.clip(vx / (target_vx + 1e-6), 0.0, 1.5))
+     
+        if self.terrain_level == 1:
+            slope_fwd_x = np.cos(self._slope_angle)
+            slope_fwd_z = np.sin(self._slope_angle)
+            vx_effective = vx * slope_fwd_x + base_vel[2] * slope_fwd_z
+        else:
+            vx_effective = vx
+        vel_error      = vx_effective - target_vx
+        progress_scale = float(np.clip(vx_effective / (target_vx + 1e-6), 0.0, 1.5))
         forward_reward = 3.0 * np.exp(-5.0 * vel_error ** 2) * progress_scale
 
         # alive bonus only when moving forward
-        alive = self.alive_bonus if vx > 0.1 else 0.3
+        alive = self.alive_bonus if vx_effective > 0.1 else 0.3
 
-        # orientation penalty
-        roll, pitch, yaw = rpy[0], rpy[1], rpy[2]
-        roll_penalty   = 4.0 * (np.exp(2.0 * abs(roll))  - 1.0)
-        pitch_penalty  = 1.5 * (np.exp(1.0 * abs(pitch)) - 1.0)
+        # FIX: Orientation penalty relative to the terrain slope
+        slope_pitch_offset = self._get_slope_pitch_offset()
+        roll, pitch, yaw   = rpy[0], rpy[1], rpy[2]
+        relative_pitch     = pitch - slope_pitch_offset   # slope-corrected pitch
+        roll_penalty   = 4.0 * (np.exp(2.0 * abs(roll))          - 1.0)
+        pitch_penalty  = 1.5 * (np.exp(1.0 * abs(relative_pitch)) - 1.0)
         orient_penalty = roll_penalty + pitch_penalty
 
         # yaw drift
@@ -362,11 +423,12 @@ class QuadrupedEnvPatched(gym.Env):
         energy_penalty = self.energy_pen * np.sum(np.square(torques)) / NUM_JOINTS
 
         # stronger stillness penalty
-        stillness_penalty = 3.0 if abs(vx) < 0.05 else 0.0
+        stillness_penalty = 3.0 if abs(vx_effective) < 0.05 else 0.0
 
-        # height
-        height         = base_pos[2]
-        height_penalty = 3.0 * max(0.0, 0.18 - height)
+        # height (relative to ground surface, not absolute z)
+        ground_z       = self._get_ground_height()
+        height_above   = base_pos[2] - ground_z
+        height_penalty = 3.0 * max(0.0, 0.18 - height_above)
 
         # action smoothness
         action_smoothness = 0.1 * np.sum(np.square(action - self._prev_action))
@@ -382,9 +444,10 @@ class QuadrupedEnvPatched(gym.Env):
 
         return float(total)
 
-    # ── action ────────────────────────────────────────────────────────────────
+    # ── action
     STANDING_POSE_TARGETS = [0.0, 0.9, -1.8] * 4
-    ACTION_SCALE          = 0.25
+    # FIX: Larger action range + stronger PD gains for slope climbing
+    ACTION_SCALE          = 0.30
 
     def _apply_action(self, action):
         for i, jid in enumerate(self._joint_ids):
@@ -394,17 +457,59 @@ class QuadrupedEnvPatched(gym.Env):
             p.setJointMotorControl2(
                 self._robot_id, jid, p.POSITION_CONTROL,
                 targetPosition=target, force=TORQUE_LIMIT,
-                positionGain=0.25, velocityGain=0.1,
+                positionGain=0.30, velocityGain=0.12,
                 physicsClientId=self._physics_client)
 
-    # ── termination ───────────────────────────────────────────────────────────
+    # ── termination 
+    def _get_slope_pitch_offset(self):
+        """Return the terrain slope angle (pitch) under the robot."""
+        if self.terrain_level == 1:
+            return -self._slope_angle
+        if self.terrain_level == 0:
+            return 0.0
+        # Heightfield: raycast two points
+        base_pos, _ = p.getBasePositionAndOrientation(
+            self._robot_id, physicsClientId=self._physics_client)
+        dx = 0.3
+        fwd_start = [base_pos[0] + dx, base_pos[1], base_pos[2] + 2.0]
+        fwd_end   = [base_pos[0] + dx, base_pos[1], base_pos[2] - 5.0]
+        fwd_result = p.rayTest(fwd_start, fwd_end,
+                               physicsClientId=self._physics_client)
+        fwd_z = 0.0
+        if fwd_result:
+            for hit in fwd_result:
+                if hit[0] != self._robot_id and hit[0] >= 0:
+                    fwd_z = hit[3][2]; break
+        bwd_start = [base_pos[0] - dx, base_pos[1], base_pos[2] + 2.0]
+        bwd_end   = [base_pos[0] - dx, base_pos[1], base_pos[2] - 5.0]
+        bwd_result = p.rayTest(bwd_start, bwd_end,
+                               physicsClientId=self._physics_client)
+        bwd_z = 0.0
+        if bwd_result:
+            for hit in bwd_result:
+                if hit[0] != self._robot_id and hit[0] >= 0:
+                    bwd_z = hit[3][2]; break
+        return np.arctan2(fwd_z - bwd_z, 2 * dx)
+
     def _is_done(self):
         base_pos, base_orn = p.getBasePositionAndOrientation(
             self._robot_id, physicsClientId=self._physics_client)
         rpy = p.getEulerFromQuaternion(base_orn)
-        if base_pos[2] < 0.15:
+        ground_z     = self._get_ground_height()
+        height_above = base_pos[2] - ground_z
+
+        # Adaptive z-min: more lenient on non-flat terrain
+        z_min = 0.18 if self.terrain_level == 0 else 0.12
+
+        if height_above < z_min:
             return True
-        if abs(rpy[0]) > np.deg2rad(50) or abs(rpy[1]) > np.deg2rad(50):
+        if abs(rpy[0]) > np.deg2rad(50):
+            return True
+
+        # Subtract the terrain slope angle from the robot's pitch
+        slope_pitch    = self._get_slope_pitch_offset()
+        relative_pitch = abs(rpy[1] - slope_pitch)
+        if relative_pitch > np.deg2rad(50):
             return True
         return False
 
@@ -415,9 +520,9 @@ class QuadrupedEnvPatched(gym.Env):
                 'terrain_level': self.terrain_level}
 
 
-# ---------------------------------------------------------------------------
+
 # PROGRESSIVE DIFFICULTY CALLBACK
-# ---------------------------------------------------------------------------
+
 
 class ProgressiveDifficultyCallback(BaseCallback):
     """
@@ -490,14 +595,18 @@ class CurriculumCallback(BaseCallback):
         return True
 
 
-# ---------------------------------------------------------------------------
 # HELPERS
-# ---------------------------------------------------------------------------
+
 
 STAGE_DIRS = {
-    1: 'sac_models/curriculum/stage1_slope',
-    2: 'sac_models/curriculum/stage2_rough',
+    1: 'sac_models/curriculum/stage1_flat',
+    2: 'sac_models/curriculum/stage2_slope',
+    3: 'sac_models/curriculum/stage3_rough',
 }
+
+# terrain_level per stage
+STAGE_TERRAIN = {1: 0, 2: 1, 3: 2}
+STAGE_NAMES   = {1: 'flat', 2: 'slope', 3: 'rough'}
 
 
 def make_env(terrain_level: int, seed: int = 0, rough_difficulty: float = 0.0):
@@ -524,42 +633,75 @@ def build_vec_env(terrain_level: int, n_envs: int = 1, seed: int = 0,
     return vec
 
 
-def load_model_for_stage(stage: int, vec_env, base_model_path: str, device: str):
-    if stage == 1:
-        model_path = base_model_path
-        print(f'\n  [Stage 1] Loading flat-terrain base model: {model_path}')
-    else:
-        prev_dir   = STAGE_DIRS[stage - 1]
-        model_path = os.path.join(prev_dir, 'best_model', 'best_model')
-        if not os.path.exists(model_path + '.zip'):
-            model_path = os.path.join(prev_dir, f'stage{stage-1}_final')
-            print(f'  [Stage {stage}] best_model not found, using: {model_path}')
-        else:
-            print(f'\n  [Stage {stage}] Loading stage-{stage-1} best model: {model_path}')
-
-    model = SAC.load(model_path, env=vec_env, device=device)
-    model.learning_rate = 1e-4
+def create_fresh_model(vec_env, device: str):
+    """
+    Initialise a brand-new SAC with the same hyperparameters used in fine-tuning,
+    but with a higher learning rate suitable for training from scratch.
+    """
+    print('\n  [Stage 1] Creating fresh SAC model (training from scratch)')
+    model = SAC(
+        'MlpPolicy',
+        vec_env,
+        learning_rate        = 3e-4,   
+        buffer_size          = 1_000_000,
+        learning_starts      = 10_000,
+        batch_size           = 256,
+        tau                  = 0.005,
+        gamma                = 0.99,
+        train_freq           = 1,
+        gradient_steps       = 1,
+        ent_coef             = 'auto',
+        target_update_interval = 1,
+        verbose              = 1,
+        device               = device,
+        policy_kwargs        = dict(net_arch=[256, 256]),
+    )
     return model
 
 
-# ---------------------------------------------------------------------------
+def load_model_for_stage(stage: int, vec_env, device: str):
+    """
+    Stage 1 → fresh model (no base model needed).
+    Stage 2+ → load best (or final) model from the previous stage.
+    """
+    if stage == 1:
+        return create_fresh_model(vec_env, device)
+
+    prev_dir   = STAGE_DIRS[stage - 1]
+    model_path = os.path.join(prev_dir, 'best_model', 'best_model')
+    if not os.path.exists(model_path + '.zip'):
+        model_path = os.path.join(prev_dir, f'stage{stage - 1}_final')
+        if not os.path.exists(model_path + '.zip'):
+            raise FileNotFoundError(
+                f'Cannot find stage {stage-1} model in {prev_dir}.\n'
+                f'Run stage {stage-1} first, or use --start_stage {stage-1}.')
+        print(f'\n  [Stage {stage}] best_model not found, loading final: {model_path}.zip')
+    else:
+        print(f'\n  [Stage {stage}] Loading stage-{stage-1} best model: {model_path}.zip')
+
+    model = SAC.load(model_path, env=vec_env, device=device)
+    model.learning_rate = 1e-4   # lower lr for fine-tuning
+    return model
+
+
+
 # STAGE TRAINING
-# ---------------------------------------------------------------------------
 
-def train_stage(stage:           int,
-                terrain_level:   int,
-                total_steps:     int,
-                base_model_path: str,
-                base_norm_path:  str,
-                device:          str,
-                n_envs:          int = 1):
 
-    out_dir = STAGE_DIRS[stage]
+def train_stage(stage:        int,
+                total_steps:  int,
+                device:       str,
+                n_envs:       int = 1):
+
+    terrain_level = STAGE_TERRAIN[stage]
+    terrain_name  = STAGE_NAMES[stage]
+    out_dir       = STAGE_DIRS[stage]
+
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'checkpoints'), exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'eval'), exist_ok=True)
 
-    stage_name = f'Stage{stage}({"slope" if terrain_level==1 else "rough"})'
+    stage_name = f'Stage{stage}({terrain_name})'
     print(f'\n{"="*60}')
     print(f'  {stage_name}  |  terrain={terrain_level}  |  steps={total_steps:,}')
     if terrain_level == 2:
@@ -568,31 +710,32 @@ def train_stage(stage:           int,
         print(f'    33%-100% steps: ramps up to full (0.08m)')
     print(f'{"="*60}')
 
-    # norm path from previous stage
+    # resolve norm path: stage 1 has no prior norm, stages 2+ inherit from prev
     if stage == 1:
-        prev_norm = base_norm_path
+        prev_norm = None
     else:
         prev_dir  = STAGE_DIRS[stage - 1]
         prev_norm = os.path.join(prev_dir, 'vec_normalize.pkl')
         if not os.path.exists(prev_norm):
-            prev_norm = base_norm_path
-            print(f'  Warning: using fallback norm: {prev_norm}')
+            print(f'  Warning: no norm found at {prev_norm}, starting fresh norm.')
+            prev_norm = None
 
     train_env = build_vec_env(terrain_level, n_envs=n_envs,
                               norm_path=prev_norm, rough_difficulty=0.0)
     eval_env  = build_vec_env(terrain_level, n_envs=1,
-                              norm_path=prev_norm, rough_difficulty=0.5)
+                              norm_path=prev_norm,
+                              rough_difficulty=0.5 if terrain_level == 2 else 0.0)
     eval_env.training    = False
     eval_env.norm_reward = False
 
-    model = load_model_for_stage(stage, train_env, base_model_path, device)
+    model = load_model_for_stage(stage, train_env, device)
 
     checkpoint_cb = CheckpointCallback(
         save_freq        = max(50_000 // n_envs, 1),
         save_path        = os.path.join(out_dir, 'checkpoints'),
         name_prefix      = f'stage{stage}',
         save_vecnormalize= True,
-        verbose=1)
+        verbose          = 1)
 
     eval_cb = EvalCallback(
         eval_env,
@@ -612,11 +755,14 @@ def train_stage(stage:           int,
             total_steps=total_steps, log_freq=50_000)
         callbacks.append(prog_cb)
 
+    # Stage 1 resets timestep counter; fine-tune stages continue counting
+    reset_timesteps = (stage == 1)
+
     t0 = time.time()
     model.learn(
         total_timesteps     = total_steps,
         callback            = callbacks,
-        reset_num_timesteps = False,
+        reset_num_timesteps = reset_timesteps,
         progress_bar        = True)
 
     elapsed = time.time() - t0
@@ -633,53 +779,60 @@ def train_stage(stage:           int,
     return model
 
 
-# ---------------------------------------------------------------------------
+
 # MAIN
-# ---------------------------------------------------------------------------
+
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--base_model',   default='sac_models/best/best_model')
-    parser.add_argument('--base_norm',    default='sac_models/best/vec_normalize.pkl')
-    parser.add_argument('--start_stage',  type=int, default=1)
-    parser.add_argument('--stage1_steps', type=int, default=1_000_000)
-    parser.add_argument('--stage2_steps', type=int, default=1_500_000)
-    parser.add_argument('--device',       default='cuda')
-    parser.add_argument('--n_envs',       type=int, default=1)
+    parser = argparse.ArgumentParser(
+        description='Curriculum SAC training from scratch (flat → slope → rough)')
+    parser.add_argument('--start_stage',  type=int, default=1,
+                        help='Stage to start from (1=flat, 2=slope, 3=rough). '
+                             'Stages before this must already be trained.')
+    parser.add_argument('--stage1_steps', type=int, default=2_000_000,
+                        help='Steps for Stage 1 (flat terrain, from scratch)')
+    parser.add_argument('--stage2_steps', type=int, default=2_000_000,
+                        help='Steps for Stage 2 (slope terrain, fine-tune)')
+    parser.add_argument('--stage3_steps', type=int, default=2_000_000,
+                        help='Steps for Stage 3 (rough terrain, fine-tune + progressive difficulty)')
+    parser.add_argument('--device',       default='cuda',
+                        help='Torch device: cuda or cpu')
+    parser.add_argument('--n_envs',       type=int, default=1,
+                        help='Number of parallel training environments')
     args = parser.parse_args()
 
-    if not os.path.exists(args.base_model + '.zip'):
-        raise FileNotFoundError(f'Base model not found: {args.base_model}.zip')
-    if not os.path.exists(args.base_norm):
-        raise FileNotFoundError(f'Norm stats not found: {args.base_norm}')
+    stage_steps = {
+        1: args.stage1_steps,
+        2: args.stage2_steps,
+        3: args.stage3_steps,
+    }
 
-    print(f'\n  Base model   : {args.base_model}.zip')
-    print(f'  Norm stats   : {args.base_norm}')
-    print(f'  Start stage  : {args.start_stage}')
-    print(f'  Stage 1 steps: {args.stage1_steps:,}  (slope)')
-    print(f'  Stage 2 steps: {args.stage2_steps:,}  (rough, progressive difficulty)')
-    print(f'  Device       : {args.device}')
+    print(f'\n{"="*60}')
+    print(f'  Curriculum SAC — FROM SCRATCH')
+    print(f'{"="*60}')
+    print(f'  Stage 1 (flat)  : {args.stage1_steps:>10,} steps  [fresh model, lr=3e-4]')
+    print(f'  Stage 2 (slope) : {args.stage2_steps:>10,} steps  [fine-tune,   lr=1e-4]')
+    print(f'  Stage 3 (rough) : {args.stage3_steps:>10,} steps  [fine-tune,   lr=1e-4, progressive difficulty]')
+    print(f'  Start stage     : {args.start_stage}')
+    print(f'  Device          : {args.device}')
+    print(f'  n_envs          : {args.n_envs}')
+    print(f'{"="*60}')
 
-    for stage in [1, 2]:
+    for stage in [1, 2, 3]:
         if stage < args.start_stage:
-            print(f'\n  Skipping stage {stage}')
+            print(f'\n  Skipping stage {stage} ({STAGE_NAMES[stage]})')
             continue
-        terrain_level = stage  # stage 1 = terrain 1, stage 2 = terrain 2
-        steps         = args.stage1_steps if stage == 1 else args.stage2_steps
         train_stage(
-            stage           = stage,
-            terrain_level   = terrain_level,
-            total_steps     = steps,
-            base_model_path = args.base_model,
-            base_norm_path  = args.base_norm,
-            device          = args.device,
-            n_envs          = args.n_envs)
+            stage       = stage,
+            total_steps = stage_steps[stage],
+            device      = args.device,
+            n_envs      = args.n_envs)
 
     print('\n  ✓  Curriculum training complete!')
     print('\n  Test with:')
-    print('    python test_sac.py --terrain 2 --episodes 5 '
-          '--model sac_models/curriculum/stage2_rough/best_model/best_model '
-          '--norm  sac_models/curriculum/stage2_rough/vec_normalize.pkl')
+    print('    python test_sac.py --terrain 2 --episodes 5 \\')
+    print('      --model sac_models/curriculum/stage3_rough/best_model/best_model \\')
+    print('      --norm  sac_models/curriculum/stage3_rough/vec_normalize.pkl')
 
 
 if __name__ == '__main__':

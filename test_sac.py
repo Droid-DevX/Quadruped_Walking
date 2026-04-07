@@ -1,5 +1,8 @@
 import argparse
+import math
 import os
+import threading
+import time
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
@@ -9,6 +12,228 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from environment import CONTROL_HZ, QuadrupedEnv
+
+
+
+# INTERACTIVE CAMERA CONTROLLER
+
+
+class InteractiveCameraController:
+    """
+    Keyboard + mouse camera controller for PyBullet GUI.
+
+    Controls
+    --------
+      A / D  or  ← / →   yaw  left / right        (2 deg/frame)
+      W / S  or  ↑ / ↓   pitch up / down           (2 deg/frame)
+      Q / E              zoom in / out             (0.1 m/frame)
+      Scroll wheel       zoom in / out             (0.5 m/tick)
+      Left-drag mouse    free orbit                (0.3 deg/px)
+      Right-drag mouse   pan camera target XY      (0.005 m/px)
+      R                  reset to defaults
+    """
+
+    def __init__(
+        self,
+        physics_client: int,
+        distance: float          = 1.5,
+        yaw: float               = 45.0,
+        pitch: float             = -20.0,
+        target: list             = None,
+        yaw_speed: float         = 2.0,
+        pitch_speed: float       = 2.0,
+        zoom_speed: float        = 0.1,
+        mouse_sensitivity: float = 0.3,
+        pan_sensitivity: float   = 0.005,
+        pitch_limits: tuple      = (-89.0, 0.0),
+        distance_limits: tuple   = (0.3, 10.0),
+        poll_hz: float           = 60.0,
+    ):
+        self._pc      = physics_client
+        self.distance = distance
+        self.yaw      = yaw
+        self.pitch    = pitch
+        self.target   = list(target or [0.0, 0.0, 0.15])
+
+        self._yaw_speed   = yaw_speed
+        self._pitch_speed = pitch_speed
+        self._zoom_speed  = zoom_speed
+        self._mouse_sens  = mouse_sensitivity
+        self._pan_sens    = pan_sensitivity
+
+        self._pitch_min, self._pitch_max = pitch_limits
+        self._dist_min,  self._dist_max  = distance_limits
+
+        # mouse drag state
+        self._left_drag    = False
+        self._right_drag   = False
+        self._prev_mouse_x = 0
+        self._prev_mouse_y = 0
+
+        # key -> (attribute, delta)
+        self._KEY_MAP = {
+            p.B3G_LEFT_ARROW:  ('yaw',      -self._yaw_speed),
+            ord('a'):          ('yaw',      -self._yaw_speed),
+            p.B3G_RIGHT_ARROW: ('yaw',       self._yaw_speed),
+            ord('d'):          ('yaw',       self._yaw_speed),
+            p.B3G_UP_ARROW:    ('pitch',    -self._pitch_speed),
+            ord('w'):          ('pitch',    -self._pitch_speed),
+            p.B3G_DOWN_ARROW:  ('pitch',     self._pitch_speed),
+            ord('s'):          ('pitch',     self._pitch_speed),
+            ord('q'):          ('distance', -self._zoom_speed),
+            ord('e'):          ('distance',  self._zoom_speed),
+        }
+
+        self._running       = False
+        self._thread        = None
+        self._poll_interval = 1.0 / poll_hz
+
+        # store defaults for R-reset
+        self._defaults = dict(
+            distance=distance,
+            yaw=yaw,
+            pitch=pitch,
+            target=list(self.target),
+        )
+
+        self._apply()   # push initial view immediately
+
+    #  public API 
+
+    def start(self):
+        """Spawn a daemon thread that polls input at poll_hz."""
+        if self._running:
+            return
+        self._running = True
+        self._thread  = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Shut down the background thread cleanly."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+
+    def update(self):
+        """
+        Synchronous alternative to start() — call once per sim step:
+
+            cam.update()
+        """
+        self._poll_once()
+
+    def reset(self):
+        """Restore camera to the values passed at construction time."""
+        self.distance = self._defaults['distance']
+        self.yaw      = self._defaults['yaw']
+        self.pitch    = self._defaults['pitch']
+        self.target   = list(self._defaults['target'])
+        self._apply()
+
+    def follow(self, position: list, height_offset: float = 0.15):
+        """
+        Keep the camera target centred on a moving body while still letting
+        the user orbit and zoom freely.  Call every sim step:
+
+            pos, _ = p.getBasePositionAndOrientation(robot_id, physicsClientId=pc)
+            cam.follow(pos)
+        """
+        self.target = [
+            position[0],
+            position[1],
+            position[2] + height_offset,
+        ]
+        self._apply()
+
+    # ── internals 
+
+    def _apply(self):
+        p.resetDebugVisualizerCamera(
+            cameraDistance=self.distance,
+            cameraYaw=self.yaw,
+            cameraPitch=self.pitch,
+            cameraTargetPosition=self.target,
+            physicsClientId=self._pc,
+        )
+
+    def _clamp(self):
+        self.pitch    = max(self._pitch_min, min(self._pitch_max, self.pitch))
+        self.distance = max(self._dist_min,  min(self._dist_max,  self.distance))
+
+    def _poll_once(self):
+        # ── keyboard 
+        try:
+            keys = p.getKeyboardEvents(physicsClientId=self._pc)
+        except Exception:
+            return
+
+        if ord('r') in keys and keys[ord('r')] & p.KEY_WAS_TRIGGERED:
+            self.reset()
+            return
+
+        changed = False
+        for key, (attr, delta) in self._KEY_MAP.items():
+            if key in keys and keys[key] & p.KEY_IS_DOWN:
+                setattr(self, attr, getattr(self, attr) + delta)
+                changed = True
+
+        # ── mouse 
+        try:
+            mouse_events = p.getMouseEvents(physicsClientId=self._pc)
+        except Exception:
+            mouse_events = []
+
+        for event in mouse_events:
+            event_type, mx, my, btn, state = event
+
+            # scroll → zoom
+            if event_type == p.MOUSE_WHEEL_SCROLL and btn == 0:
+                self.distance -= state * 0.5
+                changed = True
+
+            # button press / release
+            if event_type == p.MOUSE_BUTTON_EVENT:
+                if btn == 0:
+                    self._left_drag = bool(state)
+                elif btn == 2:
+                    self._right_drag = bool(state)
+                self._prev_mouse_x = mx
+                self._prev_mouse_y = my
+
+            # drag movement
+            if event_type == p.MOUSE_MOVE_EVENT:
+                dx = mx - self._prev_mouse_x
+                dy = my - self._prev_mouse_y
+
+                if self._left_drag:          # orbit
+                    self.yaw   += dx * self._mouse_sens
+                    self.pitch += dy * self._mouse_sens
+                    changed = True
+
+                if self._right_drag:         # pan target XY
+                    yaw_rad = math.radians(self.yaw)
+                    self.target[0] -= (
+                        dx * math.cos(yaw_rad) + dy * math.sin(yaw_rad)
+                    ) * self._pan_sens
+                    self.target[1] -= (
+                        dx * math.sin(yaw_rad) - dy * math.cos(yaw_rad)
+                    ) * self._pan_sens
+                    changed = True
+
+                self._prev_mouse_x = mx
+                self._prev_mouse_y = my
+
+        if changed:
+            self._clamp()
+            self._apply()
+
+    def _poll_loop(self):
+        while self._running:
+            try:
+                self._poll_once()
+            except Exception:
+                pass
+            time.sleep(self._poll_interval)
 
 
 
@@ -29,18 +254,7 @@ def _unwrap_raw(eval_env):
     return None
 
 
-def _force_camera(eval_env):
-    """Force TPP camera on the underlying QuadrupedEnv."""
-    try:
-        raw = _unwrap_raw(eval_env)
-        if raw is not None and hasattr(raw, '_follow_camera') and raw.render_mode:
-            raw._follow_camera()
-    except Exception:
-        pass
-
-
 def _capture_frame(raw_env, width=960, height=540):
-   
     if raw_env is None or raw_env._robot_id is None:
         return np.zeros((height, width, 3), dtype=np.uint8)
 
@@ -102,29 +316,40 @@ def evaluate_agent(model_path: str = 'sac_models/best/best_model',
         print(f'   WARNING: No vec_normalize.pkl found at {norm_path}')
 
     model   = SAC.load(model_path, env=eval_env)
-    raw_env = _unwrap_raw(eval_env)   # needed for offscreen capture
+    raw_env = _unwrap_raw(eval_env)
 
     print(f'   Episodes    : {n_episodes}')
     print(f'   Terrain     : {terrain_level}  (0=flat, 1=slope, 2=rough)')
     print(f'   Device      : {model.device}')
+    if render:
+        print(f'   Camera      : interactive  '
+              f'(WASD/arrows=orbit  QE/scroll=zoom  drag=mouse  R=reset)')
     if record_gif:
         print(f'   Recording   : {record_gif}  ({gif_width}x{gif_height} @ {gif_fps} fps)\n')
     else:
         print()
 
+    # ── interactive camera ────────────────────────────────────────────────────
+    cam = None
+    if render and raw_env is not None:
+        cam = InteractiveCameraController(
+            physics_client=raw_env._physics_client,
+            distance=getattr(raw_env, '_CAM_DISTANCE',   1.5),
+            yaw     =getattr(raw_env, '_CAM_YAW_OFFSET', 45.0),
+            pitch   =getattr(raw_env, '_CAM_PITCH',      -20.0),
+        )
+        cam.start()   # 60 Hz background thread — no changes needed in step loop
+
     all_foot_contacts: list = []
     all_joint_pos:     list = []
     episode_rewards:   list = []
     episode_distances: list = []
-    frames:            list = []   # for GIF recording
+    frames:            list = []
 
     for ep in range(n_episodes):
-        obs      = eval_env.reset()
+        obs       = eval_env.reset()
         ep_reward = 0.0
         ep_steps  = 0
-
-        if render:
-            _force_camera(eval_env)
 
         while True:
             action, _ = model.predict(obs, deterministic=True)
@@ -132,10 +357,14 @@ def evaluate_agent(model_path: str = 'sac_models/best/best_model',
             ep_reward += float(reward[0])
             ep_steps  += 1
 
-            if render:
-                _force_camera(eval_env)
+            # keep camera target locked to robot (user can still orbit freely)
+            if cam is not None and raw_env._robot_id is not None:
+                pos, _ = p.getBasePositionAndOrientation(
+                    raw_env._robot_id,
+                    physicsClientId=raw_env._physics_client)
+                cam.follow(pos)
 
-            # Capture frame for GIF (every other frame to keep file size down)
+            # capture frame for GIF (every other step to keep file size down)
             if record_gif and ep_steps % 2 == 0:
                 frames.append(_capture_frame(raw_env, gif_width, gif_height))
 
@@ -155,6 +384,9 @@ def evaluate_agent(model_path: str = 'sac_models/best/best_model',
               f'| Reward: {ep_reward:8.1f} '
               f'| Distance: {x_dist:.3f} m')
 
+    # ── cleanup 
+    if cam is not None:
+        cam.stop()
     eval_env.close()
 
     mean_r, std_r = np.mean(episode_rewards), np.std(episode_rewards)
@@ -162,7 +394,7 @@ def evaluate_agent(model_path: str = 'sac_models/best/best_model',
     print(f'\n  Mean reward  : {mean_r:.2f} +/- {std_r:.2f}')
     print(f'  Mean distance: {mean_d:.3f} +/- {std_d:.3f} m')
 
-    # ── Save GIF 
+    # ── save GIF 
     if record_gif and frames:
         try:
             import imageio
@@ -282,6 +514,7 @@ def plot_gait_analysis(foot_contacts: np.ndarray,
 
 # ENTRY POINT
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test / evaluate a trained SAC model')
     parser.add_argument('--model',      type=str, default='sac_models/best/best_model')
@@ -289,11 +522,10 @@ if __name__ == '__main__':
     parser.add_argument('--episodes',   type=int, default=5)
     parser.add_argument('--terrain',    type=int, default=0, choices=[0, 1, 2])
     parser.add_argument('--render',     action='store_true',
-                        help='Open PyBullet GUI with TPP camera')
+                        help='Open PyBullet GUI with interactive camera (WASD + mouse)')
     parser.add_argument('--gait',       action='store_true',
                         help='Generate gait analysis plots')
     parser.add_argument('--gait-out',   type=str, default='sac_gait_analysis.png')
-    # ── GIF recording 
     parser.add_argument('--record',     type=str, default=None,
                         metavar='FILE.gif',
                         help='Save a GIF of the robot walking, e.g. --record demo.gif')
@@ -320,5 +552,4 @@ if __name__ == '__main__':
     if args.gait:
         plot_gait_analysis(foot_contacts, joint_pos, save_path=args.gait_out)
 
-
-# python test_sac.py --terrain 1 --episodes 5 --render --model sac_models/curriculum/stage1_slope/best_model/best_model --norm sac_models/curriculum/stage1_slope/checkpoints/stage1_vecnormalize_1820000_steps.pkl
+# python test_sac.py --terrain 0 --episodes 5 --render --model sac_models/curriculum/stage1_flat/best_model/best_model --norm sac_models/curriculum/stage1_flat/vec_normalize.pkl 
