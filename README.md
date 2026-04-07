@@ -29,7 +29,7 @@ Mean Distance: 4.236 m
 
 ### SAC Agent (Trained)
 
-![SAC Demo](robo.gif)
+![SAC Demo](demo.gif)
 
 ```
 Episode 1/5 | Steps: 1000 | Reward:  3063.0 | Distance: 26.150 m
