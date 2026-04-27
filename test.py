@@ -8,7 +8,7 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from environment import CONTROL_HZ, QuadrupedEnv
+from env import CONTROL_HZ, QuadrupedEnv
 
 
 

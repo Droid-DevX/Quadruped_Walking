@@ -9,7 +9,7 @@ from stable_baselines3.common.callbacks import (BaseCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
-from environment import QuadrupedEnv
+from env import QuadrupedEnv
 
 
 

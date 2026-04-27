@@ -11,7 +11,7 @@ import pybullet as p
 from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from environment import CONTROL_HZ, QuadrupedEnv
+from env import CONTROL_HZ, QuadrupedEnv
 
 
 
@@ -552,4 +552,11 @@ if __name__ == '__main__':
     if args.gait:
         plot_gait_analysis(foot_contacts, joint_pos, save_path=args.gait_out)
 
-# python test_sac.py --terrain 0 --episodes 5 --render --model sac_models/curriculum/stage1_flat/best_model/best_model --norm sac_models/curriculum/stage1_flat/vec_normalize.pkl 
+#  Test Stage 1 (flat walking)
+# python test_sac.py --render --terrain 0 --model sac_models/curriculum/stage1_flat/best_model/best_model --norm sac_models/curriculum/stage1_flat/vec_normalize.pkl
+
+#  Test Stage 2 (slope)
+# python test_sac.py --render --terrain 1 --model sac_models/curriculum/stage2_slope/best_model/best_model --norm sac_models/curriculum/stage2_slope/vec_normalize.pkl
+
+#  Test Stage 3 (obstacles + goal)
+# python test_sac.py --render --terrain 2 --model sac_models/curriculum/stage3_rough/best_model/best_model --norm sac_models/curriculum/stage3_rough/checkpoints/stage3_vecnormalize_1075000_steps.pkl
