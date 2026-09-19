@@ -1,75 +1,78 @@
-
 # Python
-
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
+*.so
 *.egg-info/
-dist/
-build/
-.eggs/
-
 
 # Virtual environments
-
+.venv/
 venv/
 env/
-.venv/
-.env/
+ENV/
+mujoco_env/
+.conda/
 
+# Jupyter
+.ipynb_checkpoints/
 
-# Trained models & checkpoints 
-
-sac_models/
+# RL / ML artifacts
 checkpoints/
-*.zip
-*.pkl
-
-
-# Training logs & TensorBoard
-
+models/
 logs/
-*.npz
+runs/
+tensorboard/
+wandb/
+*.tfevents.*
 
+# Generated evaluation outputs
+evaluation/results/
+evaluation/outputs/
+evaluation/plots/
 
-# Demo / recording outputs
-
-
-*.mp4
-*.avi
-*.mov
-
-
-# PyBullet 
-
-a1/
-
-
-# Gait analysis plots
-
+# Generated media / plots
 *.png
 *.jpg
 *.jpeg
+*.mp4
+*.avi
 
+# Python caches / testing
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# IDE & OS
-
+# IDEs
 .vscode/
 .idea/
-*.swp
-*.swo
+*.code-workspace
+
+# OS files
 .DS_Store
 Thumbs.db
 desktop.ini
 
-
-
-
-
-# Misc
-
-*.log
+# Temporary files
 *.tmp
+*.temp
 *.bak
+*.swp
+*.log
+
+# Local secrets/config
+.env
+.env.*
+!.env.example
+
+# Large/generated model/data files
+*.pkl
+*.pickle
+*.zip
+*.npy
+*.npz
+*.csv
+*.xlsx
+
+# Keep project demo
+!demo.gif

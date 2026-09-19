@@ -1,153 +1,341 @@
 <div align="center">
-  <h1>Quadruped Locomotion — SAC with Stable-Baselines3</h1>
 
-  <p><i>RL pipeline for training a Unitree A1 quadruped to walk in PyBullet using Soft Actor-Critic (SAC) — with curriculum terrain, exponential orientation penalties, TPP camera, and gait analysis.</i></p>
+# Quadruped Locomotion - PPO + PD Control
 
-  <br/>
-  <img src="demo.gif" alt="Trained SAC quadruped agent demonstrating stable forward locomotion on flat terrain, achieving 43.88m per episode" width="600" style="border-radius: 8px; margin: 15px 0;"/>
-  <p>
-    <img src="https://img.shields.io/badge/Mean_Reward-3522.0-blue?style=for-the-badge" alt="Mean Reward" />
-    <img src="https://img.shields.io/badge/Mean_Distance-43.88m-green?style=for-the-badge" alt="Mean Distance" />
-    <img src="https://img.shields.io/badge/Episodes_Solved-5%2F5-orange?style=for-the-badge" alt="Episodes Solved" />
-    <img src="https://img.shields.io/badge/Obstacle_Avoidance-WIP-yellow?style=for-the-badge" alt="Obstacle Avoidance" />
-  </p>
+<p><i>
+Reinforcement-learning pipeline for training a Unitree A1 quadruped to learn stable forward locomotion in PyBullet, using PPO as the high-level controller and an explicit joint-level PD controller for low-level torque control, with flat-to-uneven terrain curriculum evaluation.
+</i></p>
+
+<br/>
+
+<img src="demo.gif" alt="Unitree A1 quadruped demonstrating PPO-based locomotion in PyBullet" width="600" style="border-radius: 8px; margin: 15px 0;"/>
+
+<p>
+  <img src="https://img.shields.io/badge/Algorithm-PPO-blue?style=for-the-badge" alt="PPO"/>
+  <img src="https://img.shields.io/badge/Low--Level_Control-PD-green?style=for-the-badge" alt="PD"/>
+  <img src="https://img.shields.io/badge/Simulator-PyBullet-orange?style=for-the-badge" alt="PyBullet"/>
+  <img src="https://img.shields.io/badge/Robot-Unitree_A1-purple?style=for-the-badge" alt="Unitree A1"/>
+</p>
+
 </div>
+
+---
 
 ## Results at a glance
 
-| Metric | PPO (Trained) | SAC v1 (Flat) | SAC v2 (Flat) | SAC v2 (Obstacles)(WIP) | 
-| :--- | :--- | :--- | :--- | :--- |
-| **Mean Reward** | 405.38 | 3063.0 | **3522.0** | ~555.67  |
-| **Mean Distance** | 4.24 m | 26.15 m | **43.88 m** | ~2.72 m |
-| **Steps / Episode** | ~180 (fell) | 1000 (full) | **1000 (full)** | 1000 (full) |
-| **Episodes Solved** | 1 / 5 | 5 / 5 | **5 / 5** | 5 / 5 |
-| **Terrain** | Flat only | Flat only | Flat only | Obstacles (WIP) |
+The project is divided into two locomotion tasks:
 
-### PPO agent (trained)
-```
-Episode 1/5 | Reward:  404.2 | Distance: 3.61 m
-Episode 2/5 | Reward:  238.7 | Distance: 1.93 m
-Episode 3/5 | Reward:  721.9 | Distance: 8.72 m
-Episode 4/5 | Reward:  152.3 | Distance: 2.10 m
-Episode 5/5 | Reward:  509.8 | Distance: 4.82 m
+1. **Task 1  Flat terrain:** learn stable forward walking at a target velocity of 0.50 m/s.
+2. **Task 2  Uneven terrain:** transfer the flat-terrain policy and progressively train it on smooth heightfield terrain.
 
-Mean Reward  : 405.38 ± 16.91
-Mean Distance: 4.236 m
-```
+### Task 1 - Flat terrain
 
-### SAC v1 — Flat terrain
-```
-Episode 1/5 | Steps: 1000 | Reward:  3063.0 | Distance: 26.150 m
-Episode 2/5 | Steps: 1000 | Reward:  3063.0 | Distance: 26.150 m
-Episode 3/5 | Steps: 1000 | Reward:  3063.0 | Distance: 26.150 m
-Episode 4/5 | Steps: 1000 | Reward:  3063.0 | Distance: 26.150 m
-Episode 5/5 | Steps: 1000 | Reward:  3063.0 | Distance: 26.150 m
+| Metric | Result |
+| :--- | :--- |
+| **Training timesteps** | 2,000,896 |
+| **Evaluation episodes** | 5 |
+| **Episode length** | 1000 steps |
+| **Episode duration** | ~16.67 s |
+| **Mean reward** | **2860.48** |
+| **Forward displacement** | **8.092 m** |
+| **Mean Vx** | **0.486 m/s** |
+| **Target velocity** | 0.50 m/s |
+| **Velocity tracking** | **97.2%** |
+| **Lateral drift** | **0.131 m** |
+| **Drift / forward distance** | **1.61%** |
+| **Max \|roll\|** | **4.81°** |
+| **Max \|pitch\|** | **6.20°** |
+| **Minimum base height** | **0.239 m** |
+| **Maximum torque** | **14.25 Nm** |
+| **Mean feet in contact** | **3.17** |
+| **Full episodes** | **5 / 5** |
 
-Mean Reward  : 3063.01 ± 0.00
-Mean Distance: 26.150 m
-```
+### Task 2 - Uneven terrain
 
-### SAC v2 — Flat terrain *(latest)*
-```
-Episode 1/5 | Steps: 1000 | Reward:  3522.0 | Distance: 43.880 m
-Episode 2/5 | Steps: 1000 | Reward:  3522.0 | Distance: 43.880 m
-Episode 3/5 | Steps: 1000 | Reward:  3522.0 | Distance: 43.880 m
-Episode 4/5 | Steps: 1000 | Reward:  3522.0 | Distance: 43.880 m
-Episode 5/5 | Steps: 1000 | Reward:  3522.0 | Distance: 43.880 m
+Final Task 2 training used conservative transfer learning from the trained Task 1 policy.
 
-Mean Reward  : 3522.0 ± 0.00
-Mean Distance: 43.880 m
-```
+| Metric | Result |
+| :--- | :--- |
+| **Training timesteps** | 500,000 |
+| **Initial policy** | Task 1 trained PPO |
+| **Terrain curriculum** | 0.05 → 0.10 → 0.15 → 0.20 → 0.25 |
+| **Target velocity** | 0.50 m/s |
+| **Difficulty 0.25** | **5 / 5 full episodes** |
+| **Difficulty 0.50** | **5 / 5 full episodes** |
+| **Difficulty 0.75** | **4 / 5 full episodes** |
+| **Difficulty 1.00** | **3 / 5 full episodes** |
 
-### SAC v2 — Obstacle avoidance *(Work in Progress)*
-```
-Episode 1/5 | Steps: 1000 | Reward:  ~352.0 | Distance: ~1.880 m
-Episode 2/5 | Steps: 1000 | Reward:  ~590.0 | Distance: ~2.500 m
-Episode 3/5 | Steps: 1000 | Reward:  ~725.0 | Distance: ~3.780 m
-...
 
-> Obstacle avoidance is under active development — results will improve.
-```
 
-## How it works
+## Architecture
 
-**Observation (44-dim):** base velocity & angular velocity, roll/pitch/yaw, 12 joint positions & velocities, 4 foot contact flags, gravity vector, target velocity, terrain level.
-
-**Action (12-dim):** joint offsets from standing pose `[0.0, 0.9, -1.8] × 4`, scaled by `0.25 rad`.
-
-**Key reward terms:** forward velocity (Gaussian peak at 0.5 m/s) · alive bonus · exponential roll/pitch penalty · yaw & lateral drift · energy · height collapse.
-
-**Curriculum:** Flat (→ reward > 800) → Random heightfield / Obstacle avoidance.
-*(Slope stage removed — agent now transitions directly from flat to obstacle terrain.)*
-
-**Termination:** height < 0.15 m, roll/pitch > 50°, or 1000 steps.
-
-## Directory structure
+The controller is intentionally split into a high-level learning policy and a deterministic low-level controller:
 
 ```text
-Quadruped/
-├── environment.py   # Physics, reward, camera
-├── train_sac.py     # SAC training + curriculum
-├── test_sac.py      # Evaluation + gait plots
-└── sac_models/      # Saved models + TensorBoard logs
+                 Observation
+                     │
+                     ▼
+              ┌─────────────┐
+              │     PPO     │
+              │ High-level  │
+              │ controller  │
+              └──────┬──────┘
+                     │
+                     ▼
+          Desired joint positions
+                     │
+                     ▼
+              ┌─────────────┐
+              │     PD      │
+              │ Low-level   │
+              │ controller  │
+              └──────┬──────┘
+                     │
+                     ▼
+                   Torque
+                     │
+                     ▼
+              ┌─────────────┐
+              │  PyBullet   │
+              │  Unitree A1 │
+              └──────┬──────┘
+                     │
+                     ▼
+                 Observation
+                     │
+                     └──────────► PPO
 ```
+
+The core control law is:
+
+```text
+τ = Kp(q_des − q) − Kd q̇
+```
+
+with the current controller using:
+
+```text
+Kp = 40
+Kd = 1
+Torque limit = 33.5 Nm
+```
+
+This architecture keeps the RL policy responsible for **locomotion behavior**, while the PD controller provides the low-level joint stabilization and torque conversion.
+
+---
+
+
+
+### Terrain generation
+
+The terrain is generated as a heightfield:
+
+```text
+Rows       : 41
+Columns    : 21
+Cell size  : 0.4 m
+```
+
+The terrain height amplitude is controlled by:
+
+```python
+amplitude = 0.01 + 0.07 * difficulty
+```
+
+Therefore:
+
+| Difficulty | Height amplitude |
+| :---: | :---: |
+| 0.00 | 1.0 cm |
+| 0.10 | 1.7 cm |
+| 0.25 | 2.75 cm |
+| 0.50 | 4.5 cm |
+| 0.75 | 6.25 cm |
+| 1.00 | 8.0 cm |
+
+The generated heightfield is smoothed before being used by the simulator.
+
+**Difficulty represents terrain height variation; it is not a direct slope-angle setting.**
+
+
+
+
+## Project structure
+
+```text
+Quadruped_Walking/
+│
+├── README.md
+├── requirements.txt
+├── .gitignore
+├── demo.gif
+│
+├── controllers/
+│   └── pd_controller.py
+│
+├── environments/
+│   ├── env_flat_terrain.py
+│   └── env_uneven_terrain.py
+│
+├── training/
+│   ├── train_task1.py
+│   └── train_task2.py
+│
+├── evaluation/
+│   ├── evaluate_task1.py
+│   ├── evaluate_task2.py
+│   └── gait_results_task1.py
+│
+├── tests/
+│   ├── test_task1_flat.py
+│   └── test_task2_uneven.py
+│
+├── diagnostics/
+│   └── ...
+│
+├── configs/
+│   └── ...
+│
+├── checkpoints/
+│   ├── task1_flat/
+│   └── task2_terrain/
+│
+├── models/
+│   ├── task1_flat/
+│   └── task2_terrain/
+│
+└── logs/
+    └── ...
+```
+
+---
 
 ## Setup
 
-### Prerequisites
+### Requirements
 
-Ensure Python 3.8+ is installed.
+Recommended environment:
 
-```bash
-pip install stable-baselines3 pybullet gymnasium torch numpy matplotlib
+```text
+Python 3.11.x
 ```
 
-## Usage
+Install the project dependencies:
 
 ```bash
-# 1. Sanity check (random policy)
-python environment.py
-
-# 2. Train
-python train_sac.py --n-envs 4 --timesteps 3000000
-
-# 3. Monitor
-tensorboard --logdir sac_models/logs/tensorboard
-
-# 4. Evaluate (flat)
-python test_sac.py --render --episodes 5 --gait --gait-out gait_analysis.png
-
-# 5. Test on obstacle terrain (WIP)
-python test_sac.py --terrain 2 --episodes 5   # obstacles / rough
+pip install -r requirements.txt
 ```
+
+The project uses:
+
+```text
+PyBullet
+Gymnasium
+Stable-Baselines3
+PyTorch
+NumPy
+Pandas
+Matplotlib
+TensorBoard
+```
+
+For GPU training, install the appropriate CUDA-enabled PyTorch build for the target machine.
+
+---
+
+
 
 ## Training progression
 
-| Timesteps | Episode Length | Mean Reward |
-| :--- | :--- | :--- |
-| 0 – 20k | ~30 | ~-40 (random) |
-| 20k – 100k | 30–100 | -40 → -10 |
-| 100k – 300k | 100–400 | -10 → +50 |
-| 300k – 800k | 400–800 | +50 → +400 |
-| 800k – 1.5M | 800–1000 | +400 → +800 |
-| 1.5M – 3M | 1000 | +800 → **3063** |
-| 3M+ | 1000 | **3063 → 3522** *(+14.7% improvement)* |
+### Task 1
 
-## Key design decisions
+```text
+Environment validation
+        ↓
+PD standing validation
+        ↓
+Controlled-action validation
+        ↓
+Smooth action-rate limiting
+        ↓
+PPO training
+        ↓
+Flat-terrain evaluation
+        ↓
+Task 1 trained policy
+```
 
-- **Exponential orientation penalty** — replaces linear roll penalty; 45° lean now costs ~5.5× vs ~1.6× before, making sideways walking nonviable.
-- **Alive bonus 0.5 → 1.5** — staying upright now clearly dominates falling.
-- **Tighter termination (60° → 50°, height 0.08 → 0.15 m)** — forces the policy to treat leaning as episode-ending.
-- **`learning_starts` 10k → 20k** — ensures diverse replay buffer before gradient updates with early short episodes.
-- **Slope stage removed** — curriculum now skips 10° slope and jumps directly to obstacle/heightfield terrain for faster task complexity scaling.
+### Task 2
 
-## Roadmap
+```text
+Task 1 trained policy
+        ↓
+difficulty 0.05
+        ↓
+difficulty 0.10
+        ↓
+difficulty 0.15
+        ↓
+difficulty 0.20
+        ↓
+difficulty 0.25
+        ↓
+Robustness evaluation
+        ↓
+0.50 / 0.75 / 1.00
+```
 
-- [x] Flat terrain locomotion — SAC (3522 reward / 43.88 m)
-- [x] Basic obstacle terrain integration
-- [ ] Obstacle avoidance — full tuning & best results
-- [ ] Gait analysis plots for obstacle terrain
+---
+
+
+
+## PPO + explicit PD controller
+
+The project does not directly train PPO to output raw joint torques.
+
+Instead:
+
+```text
+PPO → desired joint position → PD → torque
+```
+
+This separates high-level locomotion learning from low-level joint control and provides a bounded, interpretable torque interface.
+
+
+
+### PD gains
+
+The controller uses:
+
+```text
+Kp = 40
+Kd = 1
+```
+
+with:
+
+```text
+|torque| ≤ 33.5 Nm
+```
+
+The low-level controller was validated before PPO training.
+
+
+## Current limitations
+
+- The current Task 2 terrain is a **smooth heightfield**, not a full obstacle-navigation benchmark.
+- Terrain difficulty is controlled by height amplitude rather than a direct slope-angle parameter.
+- Task 2 performance degrades as difficulty is pushed beyond the training curriculum.
+- Difficulty 0.75 currently produces occasional failures.
+- Difficulty 1.00 currently produces more frequent failures.
+- The project focuses on forward locomotion rather than turning, recovery behaviors, or obstacle avoidance.
+- The current observations are vision-free; terrain/object information is obtained directly from the simulation environment.
+
+---
+
 
 ## License
 
-MIT — see [Stable-Baselines3](https://stable-baselines3.readthedocs.io/) and [PyBullet](https://github.com/bulletphysics/bullet3) for dependencies.
+MIT License.
+
+This project uses open-source components including [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3), [Gymnasium](https://github.com/Farama-Foundation/Gymnasium), [PyBullet](https://github.com/bulletphysics/bullet3), and [PyTorch](https://pytorch.org/).

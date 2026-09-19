@@ -1,0 +1,27 @@
+# Task 1 — A1 Flat-Ground PPO
+seed: 42
+total_timesteps: 2000000
+
+terrain_id: 0
+target_velocity_mps: 0.5
+max_episode_steps: 1000
+
+# PPO
+learning_rate: 0.0003
+n_steps: 2048
+batch_size: 64
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.20
+ent_coef: 0.01
+vf_coef: 0.50
+max_grad_norm: 0.50
+
+# MLP
+policy_hidden_layers: [256, 256]
+
+# Normalization
+normalize_observation: true
+normalize_reward: false
+clip_observation: 10.0
