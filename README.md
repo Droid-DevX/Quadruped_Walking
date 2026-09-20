@@ -3,12 +3,44 @@
 # Quadruped Locomotion - PPO + PD Control
 
 <p><i>
+
 Reinforcement-learning pipeline for training a Unitree A1 quadruped to learn stable forward locomotion in PyBullet, using PPO as the high-level controller and an explicit joint-level PD controller for low-level torque control, with flat-to-uneven terrain curriculum evaluation.
+
 </i></p>
 
 <br/>
 
-<img src="demo.gif" alt="Unitree A1 quadruped demonstrating PPO-based locomotion in PyBullet" width="600" style="border-radius: 8px; margin: 15px 0;"/>
+<table>
+<tr>
+
+<td align="center" width="50%">
+
+<b>Flat Terrain</b><br/><br/>
+
+<img src="task1.gif"
+  alt="Unitree A1 quadruped demonstrating PPO-based locomotion on flat terrain in PyBullet"
+  width="450"
+  height="270"
+  style="border-radius: 8px;"/>
+
+</td>
+
+<td align="center" width="50%">
+
+<b>Uneven Terrain</b><br/><br/>
+
+<img src="task2.gif"
+  alt="Unitree A1 quadruped demonstrating PPO-based locomotion on uneven terrain in PyBullet"
+  width="450"
+  height="270"
+  style="border-radius: 8px;"/>
+
+</td>
+
+</tr>
+</table>
+
+<br/>
 
 <p>
   <img src="https://img.shields.io/badge/Algorithm-PPO-blue?style=for-the-badge" alt="PPO"/>
@@ -18,6 +50,7 @@ Reinforcement-learning pipeline for training a Unitree A1 quadruped to learn sta
 </p>
 
 </div>
+
 
 ---
 
