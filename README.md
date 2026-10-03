@@ -71,39 +71,32 @@ Final Task 2 training used conservative transfer learning from the trained Task 
 
 The controller is intentionally split into a high-level learning policy and a deterministic low-level controller:
 
-```text
-                 Observation
-                     │
-                     ▼
-              ┌─────────────┐
-              │     PPO     │
-              │ High-level  │
-              │ controller  │
-              └──────┬──────┘
-                     │
-                     ▼
-          Desired joint positions
-                     │
-                     ▼
-              ┌─────────────┐
-              │     PD      │
-              │ Low-level   │
-              │ controller  │
-              └──────┬──────┘
-                     │
-                     ▼
-                   Torque
-                     │
-                     ▼
-              ┌─────────────┐
-              │  PyBullet   │
-              │  Unitree A1 │
-              └──────┬──────┘
-                     │
-                     ▼
-                 Observation
-                     │
-                     └──────────► PPO
+```mermaid
+graph TD
+    subgraph ClosedLoop ["Hierarchical Control Loop"]
+        Obs[" Observation Vector<br/><code>[Base Pos, RPY, Joint Angles (q), Joint Vel (q̇), IMU]</code>"]
+        
+        PPO[" PPO Controller<br/><b>(High-Level Policy)</b>"]
+        
+        PD[" PD Controller<br/><b>(Low-Level Controller)</b><br/><code>τ = Kp(q_des − q) − Kd·q̇</code>"]
+        
+        Robot[" PyBullet Simulator<br/><b>(Unitree A1 Quadruped)</b>"]
+        
+        Obs -->|"Policy Input"| PPO
+        PPO -->|"Desired Joint Positions (q_des)"| PD
+        PD -->|"Bounded Torques (τ ≤ 33.5 Nm)"| Robot
+        Robot -->|"State Feedback"| Obs
+    end
+
+    classDef ppo fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef pd fill:#1e293b,stroke:#4ade80,stroke-width:2px,color:#f8fafc;
+    classDef sim fill:#1e293b,stroke:#a855f7,stroke-width:2px,color:#f8fafc;
+    classDef obs fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
+
+    class PPO ppo;
+    class PD pd;
+    class Robot sim;
+    class Obs obs;
 ```
 
 The core control law is:
@@ -247,42 +240,29 @@ For GPU training, install the appropriate CUDA-enabled PyTorch build for the tar
 
 ## Training progression
 
-### Task 1
+```mermaid
+flowchart TD
+    subgraph Task1 ["Task 1: Flat Terrain Pipeline"]
+        direction TB
+        T1_A["Environment Validation"] --> T1_B["PD Standing Validation"]
+        T1_B --> T1_C["Controlled-Action Validation"]
+        T1_C --> T1_D["Smooth Action-Rate Limiting"]
+        T1_D --> T1_E["PPO Training (2M steps)"]
+        T1_E --> T1_F["Flat-Terrain Evaluation"]
+        T1_F --> T1_Policy["Task 1 Trained Policy"]
+    end
 
-```text
-Environment validation
-        ↓
-PD standing validation
-        ↓
-Controlled-action validation
-        ↓
-Smooth action-rate limiting
-        ↓
-PPO training
-        ↓
-Flat-terrain evaluation
-        ↓
-Task 1 trained policy
-```
+    subgraph Task2 ["Task 2: Uneven Terrain Curriculum"]
+        direction TB
+        T2_Policy["Task 1 Policy (Pretrained)"] --> T2_1["Difficulty 0.05"]
+        T2_1 --> T2_2["Difficulty 0.10"]
+        T2_2 --> T2_3["Difficulty 0.15"]
+        T2_3 --> T2_4["Difficulty 0.20"]
+        T2_4 --> T2_5["Difficulty 0.25"]
+        T2_5 --> T2_Eval["Robustness Evaluation<br/>(0.50 / 0.75 / 1.00)"]
+    end
 
-### Task 2
-
-```text
-Task 1 trained policy
-        ↓
-difficulty 0.05
-        ↓
-difficulty 0.10
-        ↓
-difficulty 0.15
-        ↓
-difficulty 0.20
-        ↓
-difficulty 0.25
-        ↓
-Robustness evaluation
-        ↓
-0.50 / 0.75 / 1.00
+    T1_Policy ==>|"Transfer Learning"| T2_Policy
 ```
 
 ---
@@ -295,8 +275,10 @@ The project does not directly train PPO to output raw joint torques.
 
 Instead:
 
-```text
-PPO → desired joint position → PD → torque
+```mermaid
+flowchart LR
+    PPO[" PPO Policy"] -->|"Desired Joint Position (q_des)"| PD[" PD Controller"]
+    PD -->|"Actuator Torque (τ)"| Motors[" Unitree A1 Motors"]
 ```
 
 This separates high-level locomotion learning from low-level joint control and provides a bounded, interpretable torque interface.
